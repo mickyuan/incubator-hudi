@@ -18,6 +18,12 @@
 
 package org.apache.hudi;
 
+import org.apache.avro.Conversions;
+import org.apache.avro.LogicalTypes;
+import org.apache.avro.Schema;
+import org.apache.avro.Schema.Field;
+import org.apache.avro.generic.GenericFixed;
+import org.apache.avro.generic.GenericRecord;
 import org.apache.hudi.client.HoodieReadClient;
 import org.apache.hudi.client.HoodieWriteClient;
 import org.apache.hudi.client.WriteStatus;
@@ -39,11 +45,6 @@ import org.apache.hudi.hive.SlashEncodedDayPartitionValueExtractor;
 import org.apache.hudi.index.HoodieIndex;
 import org.apache.hudi.keygen.KeyGenerator;
 import org.apache.hudi.table.UserDefinedBulkInsertPartitioner;
-
-import org.apache.avro.LogicalTypes;
-import org.apache.avro.Schema;
-import org.apache.avro.Schema.Field;
-import org.apache.avro.generic.GenericRecord;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 
@@ -85,7 +86,7 @@ public class DataSourceUtils {
       // return, if last part of name
       if (i == parts.length - 1) {
         Schema fieldSchema = valueNode.getSchema().getField(part).schema();
-        return convertValueForSpecificDataTypes(fieldSchema, val);
+        return convertValueForSpecificTypes(fieldSchema, val);
       } else {
         // VC: Need a test here
         if (!(val instanceof GenericRecord)) {
@@ -107,14 +108,17 @@ public class DataSourceUtils {
   /**
    * This method converts values for fields with certain Avro/Parquet data types that require special handling.
    *
+   * Decimal Type is converted to readable value instead of direct invoking .toString()
+   *
    * Logical Date Type is converted to actual Date value instead of Epoch Integer which is how it is
+   *
    * represented/stored in parquet.
    *
    * @param fieldSchema avro field schema
    * @param fieldValue avro field value
    * @return field value either converted (for certain data types) or as it is.
    */
-  private static Object convertValueForSpecificDataTypes(Schema fieldSchema, Object fieldValue) {
+  private static Object convertValueForSpecificTypes(Schema fieldSchema, Object fieldValue) {
     if (fieldSchema == null) {
       return fieldValue;
     }
@@ -122,6 +126,12 @@ public class DataSourceUtils {
     if (isLogicalTypeDate(fieldSchema)) {
       return LocalDate.ofEpochDay(Long.parseLong(fieldValue.toString()));
     }
+
+    if (isLogicalTypeDecimal(fieldSchema)) {
+      return new Conversions.DecimalConversion().fromFixed((GenericFixed) fieldValue,
+              fieldSchema, fieldSchema.getTypes().get(0).getLogicalType());
+    }
+
     return fieldValue;
   }
 
@@ -136,6 +146,22 @@ public class DataSourceUtils {
       return fieldSchema.getTypes().stream().anyMatch(schema -> schema.getLogicalType() == LogicalTypes.date());
     }
     return fieldSchema.getLogicalType() == LogicalTypes.date();
+  }
+
+  /**
+   * Given an Avro field schema checks whether the field is of Logical Date Type or not.
+   *
+   * @param fieldSchema avro field schema
+   * @return boolean indicating whether fieldSchema is of Avro's Decimal Logical Type
+   */
+  private static boolean isLogicalTypeDecimal(Schema fieldSchema) {
+    if (fieldSchema.getType() == Schema.Type.UNION) {
+      return fieldSchema.getTypes().stream()
+              .anyMatch(schema ->
+                      "decimal".equals(schema.getLogicalType() == null ? "" :
+                              schema.getLogicalType().getName()));
+    }
+    return "decimal".equals(fieldSchema.getLogicalType() == null ? "" : fieldSchema.getLogicalType().getName());
   }
 
   /**
